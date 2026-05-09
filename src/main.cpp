@@ -1,5 +1,3 @@
-// This example shows various featues of the library for LCD with 16 chars and 2 lines.
-
 #include <Arduino.h>
 #include <Wire.h>
 #include <LiquidCrystal_PCF8574.h>
@@ -28,12 +26,13 @@ Supabase db;
 #define SUPABASE_KEY "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1kc3Z1Zm1rbnlld29nYWdkeXZ5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYyNTQ4MjYsImV4cCI6MjA5MTgzMDgyNn0.pwgIAqhiu2mMp1-owfxi4mN6TKVGb9eboAdyFF5JdU0"
 
 String accessToken = "";
+String userId = "";
 
 //Map analog pins to their names
 #define PH_PIN 33
 #define TEMP_PIN 32
-#define EC_PIN 35
-#define TDS_PIN 36
+#define EC_PIN 36
+// #define TDS_PIN 36
 #define LEVEL_PIN 39
 #define LED_PIN 4
 
@@ -52,7 +51,7 @@ bool oldDeviceConnected = false;
 
 uint32_t value = 0;
 
-// LiquidCrystal_PCF8574 lcd(0x27);  // set the LCD address to 0x27 for a 16 chars and 2 line display
+LiquidCrystal_PCF8574 lcd(0x27);  // set the LCD address to 0x27 for a 16 chars and 2 line display
 
 //function templates
 void sensor_values_to_mA();
@@ -60,6 +59,7 @@ void checkWiFiConnection();
 void reconnectWiFi();
 float mapFloat(float x, float in_min, float in_max, float out_min, float out_max);
 bool setupSupabase();
+void restartESP();
 
 void setup() {
   Serial.begin(9600);
@@ -75,14 +75,14 @@ void setup() {
   if (error == 0) {
     Serial.println(": LCD found.");
  
-    // lcd.begin(20, 4);  
-    // lcd.createChar(0, wifi);
+    lcd.begin(20, 4);  
+    lcd.createChar(0, wifi);
 
   } else {
     Serial.println(": LCD not found.");
   }  // if
 
-  // lcd.setBacklight(255);
+  lcd.setBacklight(255);
 
   pinMode(LED_PIN, OUTPUT);
 
@@ -100,8 +100,8 @@ void setup() {
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   unsigned long startAttemptTime = millis();
 
-  // lcd.setCursor(0, 0);
-  // lcd.print("Connecting to WiFi..");
+  lcd.setCursor(0, 0);
+  lcd.print("Connecting to WiFi..");
   while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < WIFI_TIMEOUT_MS) {
     delay(100);
   }
@@ -110,24 +110,119 @@ void setup() {
     Serial.println("Connected to WiFi");
     Serial.print("IP Address: ");
     Serial.println(WiFi.localIP());
-    // lcd.setCursor(0, 1);
-    // lcd.print("Connected!");
+    lcd.setCursor(0, 1);
+    lcd.print("Connected!");
     digitalWrite(LED_PIN, HIGH); // turn on LED to indicate WiFi connection
     wifiConnected = true;
     delay(2000); // wait a moment before trying to log in to Supabase
-    // lcd.setCursor(0, 2);
-    // lcd.print("Logging in...");
+    lcd.setCursor(0, 2);
+    lcd.print("Logging in...");
     
     loggedIn = setupSupabase();
+    if(loggedIn) {
+      lcd.setCursor(0, 3);
+      lcd.print("Login Success!");
+    } else {
+      lcd.setCursor(0, 3);
+      lcd.print("Login Failed!");
+      restartESP();
+    }
     // Initialize Supabase client
   } else {
-    // lcd.setCursor(0, 1);
-    // lcd.print("Failed to connect");
+    lcd.setCursor(0, 1);
+    lcd.print("Failed to connect");
     Serial.println("Failed to connect to WiFi");
     wifiConnected = false;
+    restartESP();
   }
 
 }  // setup()
+
+uint32_t lastSensorReadTime = 0;
+String jsonStr;
+
+void loop() {
+  // Check WiFi connection and reconnect if necessary
+  checkWiFiConnection();
+
+  //read sensors and update LCD
+  if(millis() - lastSensorReadTime > 10000) { // read sensors every 10 seconds
+    sensor_values_to_mA();
+    if(wifiConnected) {
+      lcd.setCursor(19, 0);
+      lcd.write((uint8_t)0); // custom wifi character
+
+      JsonDocument doc;
+      doc["ph"] = ph_value; //ph_value;
+      doc["temp"] = temp; //temp;
+      doc["ec"] = ec_value; //ec_value;
+      doc["tds"] = tds_value; //tds_value;
+      doc["level"] = level_value; //level_value;
+      doc["user_id"] = userId; // Include user ID in the data being uploaded
+
+      serializeJson(doc, jsonStr);
+      int code = db.insert(SENSOR_TABLE, jsonStr, false);
+      if (code == 201) {
+        digitalWrite(LED_PIN, HIGH); // turn on LED to indicate successful upload
+        delay(300);
+        digitalWrite(LED_PIN, LOW); // turn off LED after a short delay
+      }
+      db.urlQuery_reset();
+    }
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Level: ");
+    lcd.print(level_value, 1);
+    lcd.print("m");
+    
+    lcd.setCursor(0, 1);
+    lcd.print("Temp:");
+    lcd.print(temp, 1);
+    lcd.print((char)223); // degree symbol
+    lcd.print("C ");
+    lcd.print("pH:");
+    lcd.print(ph_value, 1);
+   
+    lcd.setCursor(0, 2);
+    lcd.print("EC:");
+    lcd.print(ec_value);
+    lcd.print("uS/cm");
+    lcd.setCursor(0, 3);
+    lcd.print("TDS:");
+    lcd.print(tds_value);
+    lcd.print("ppm");
+    lastSensorReadTime = millis();
+  }
+
+  // notify changed value
+  // if (deviceConnected)
+  // {
+  //   txCharacteristics->setValue(jsonStr.c_str());
+  //   txCharacteristics->notify();
+  //   // value++;
+  //   Serial.print("New value notified: ");
+  //   Serial.println(jsonStr);
+  //   delay(10000); // bluetooth stack will go into congestion, if too many packets are sent, in 6 hours test i was able to go as low as 3ms
+  // }
+  // // disconnecting
+  // if (!deviceConnected && oldDeviceConnected)
+  // {
+  //   Serial.println("Device disconnected.");
+  //   delay(500);                  // give the bluetooth stack the chance to get things ready
+  //   pServer->startAdvertising(); // restart advertising
+  //   Serial.println("Start advertising");
+  //   oldDeviceConnected = deviceConnected;
+  // }
+  // // connecting
+  // if (deviceConnected && !oldDeviceConnected)
+  // {
+  //   // do stuff here on connecting
+  //   oldDeviceConnected = deviceConnected;
+  //   Serial.println("Device Connected");
+    
+  // }
+  
+}  // loop()
 
 float mapFloat(float x, float in_min, float in_max, float out_min, float out_max) {
   return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
@@ -157,12 +252,13 @@ bool setupSupabase() {
     Serial.printf("Login attempt %d/%d...\n", retryCount + 1, maxRetries);
     Serial.printf("Free heap before login: %d bytes\n", ESP.getFreeHeap());
     
-    int loginResult = db.login_email(DEFAULT_EMAIL, DEFAULT_PASSWORD);
+    int loginResult = db.login_email(DEFAULT_EMAIL, DEFAULT_PASSWORD, userId);
     
     Serial.printf("Free heap after login: %d bytes\n", ESP.getFreeHeap());
     
     if (loginResult == 200) {
       Serial.println("Logged in to Supabase successfully");
+      Serial.println("User ID: " + userId);
       return true;
     } else {
       Serial.printf("Login attempt %d failed with code: %d\n", retryCount + 1, loginResult);
@@ -225,109 +321,28 @@ void sensor_values_to_mA() {
 
   // convert to mA using the sensor's transfer function (example for a hypothetical sensor)
   temp = temp / 150; 
-  ph_value = ph_value / 150;
-  ec_float = ec_float / 150;
-  tds_value = tds_value / 150;
-  level_value = level_value / 150;
+  ph_value = ph_value / 146;
+  ec_float = ec_float / 146;
+  tds_value = tds_value / 146;
+  level_value = level_value / 146;
+   Serial.printf("Temp: %.1f °C, pH: %.1f, EC: %.1f uS/cm, Level: %.1f%\n", temp, ph_value, ec_value, level_value);
+
 
   // convert to actual values
   temp = ((temp - 4.0) * 6.25) - 20.0;
   ph_value = (ph_value - 4.0) * 0.875;
   ec_float = 44000 * ((ec_float - 4.0) / 16.0);
   ec_value = (uint32_t)ec_float;
-  tds_value = 0.5 * ec_value;
+  tds_value = 0.6 * ec_value;
   level_value = mapFloat(level_value, 4, 20, 0, 50); // assuming level sensor gives 0-20mA for 0-100% level
+ }
 
-  Serial.printf("Temp: %.1f °C, pH: %.1f, EC: %d uS/cm, TDS: %d ppm, Level: %.1f%\n", temp, ph_value, ec_value, tds_value, level_value);
+
+void restartESP(){
+  delay(2000);
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Restarting...");
+  delay(2000);
+  ESP.restart();
 }
-
-uint32_t lastSensorReadTime = 0;
-
-void loop() {
-  // Check WiFi connection and reconnect if necessary
-  checkWiFiConnection();
-
-  //read sensors and update LCD
-  if(millis() - lastSensorReadTime > 5000) { // read sensors every 10 seconds
-    sensor_values_to_mA();
-    // lcd.clear();
-    if(wifiConnected) {
-      // lcd.setCursor(19, 0);
-      // lcd.write((uint8_t)0); // custom wifi character
-      JsonDocument doc;
-      doc["temp"] = temp;
-      doc["ph"] = ph_value;
-      doc["ec"] = ec_value;
-      doc["tds"] = tds_value;
-      doc["level"] = level_value;
-
-      String jsonStr;
-      serializeJson(doc, jsonStr);
-      Serial.println("Uploading data to Supabase...");
-      int code = db.insert(SENSOR_TABLE, jsonStr, false);
-      Serial.printf("Supabase response code: %d\n", code);
-      db.urlQuery_reset();
-    }
-
-    // lcd.setCursor(0, 0);
-    // lcd.print("Level: ");
-    // lcd.print(level_value, 1);
-    // lcd.print("m");
-    
-    // lcd.setCursor(0, 1);
-    // lcd.print("Temp:");
-    // lcd.print(temp, 1);
-    // lcd.print((char)223); // degree symbol
-    // lcd.print("C ");
-    // lcd.print("pH:");
-    // lcd.print(ph_value, 1);
-   
-    // lcd.setCursor(0, 2);
-    // lcd.print("EC:");
-    // lcd.print(ec_value);
-    // lcd.print("uS/cm");
-    // lcd.setCursor(0, 3);
-    // lcd.print("TDS:");
-    // lcd.print(tds_value);
-    // lcd.print("ppm");
-    lastSensorReadTime = millis();
-  }
-
-  // notify changed value
-  // if (deviceConnected)
-  // {
-  //   JsonDocument root;
-  //   root["temp"] = random(2000, 3000) / 100.0;
-  //   root["tds"] = random(100, 500);
-  //   root["ph"] = random(650, 790) / 100.0;
-  //   root["ec"] = random(100, 200) / 100.0;
-  //   root["level"] = random(100, 500) / 10.0;
-      
-  //   String jsonStr;
-  //   serializeJson(root, jsonStr);
-  //   txCharacteristics->setValue(jsonStr.c_str());
-  //   txCharacteristics->notify();
-  //   // value++;
-  //   Serial.print("New value notified: ");
-  //   Serial.println(jsonStr);
-  //   delay(10000); // bluetooth stack will go into congestion, if too many packets are sent, in 6 hours test i was able to go as low as 3ms
-  // }
-  // // disconnecting
-  // if (!deviceConnected && oldDeviceConnected)
-  // {
-  //   Serial.println("Device disconnected.");
-  //   delay(500);                  // give the bluetooth stack the chance to get things ready
-  //   pServer->startAdvertising(); // restart advertising
-  //   Serial.println("Start advertising");
-  //   oldDeviceConnected = deviceConnected;
-  // }
-  // // connecting
-  // if (deviceConnected && !oldDeviceConnected)
-  // {
-  //   // do stuff here on connecting
-  //   oldDeviceConnected = deviceConnected;
-  //   Serial.println("Device Connected");
-    
-  // }
-  
-}  // loop()
