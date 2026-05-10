@@ -337,7 +337,6 @@ void sensor_values_to_mA() {
   level_value = mapFloat(level_value, 4, 20, 0, 50); // assuming level sensor gives 0-20mA for 0-100% level
  }
 
-
 void restartESP(){
   delay(2000);
   lcd.clear();
